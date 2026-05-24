@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CodeQuest by hijake</title>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import {
+      getAuth,
+      GoogleAuthProvider,
+      GithubAuthProvider,
+      signInWithPopup,
+      signOut,
+      onAuthStateChanged,
+      createUserWithEmailAndPassword,
+      signInWithEmailAndPassword
+    } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    import {
+      getFirestore,
+      doc,
+      getDoc,
+      setDoc,
+      updateDoc,
+      arrayUnion,
+      increment,
+      collection,
+      getDocs
+    } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    import { firebaseConfig } from "./firebase-config.js";
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const googleProvider = new GoogleAuthProvider();
+    const githubProvider = new GithubAuthProvider();
+
+    const statusEl = () => document.getElementById("status");
+    const profileEl = () => document.getElementById("profile");
+    const lessonsEl = () => document.getElementById("lessons");
+    const loginGoogleBtn = () => document.getElementById("login-google");
+    const loginGithubBtn = () => document.getElementById("login-github");
+    const loginEmailForm = () => document.getElementById("login-email-form");
+    const logoutBtn = () => document.getElementById("logout-btn");
+
+    async function ensureUserDoc(user) {
+      const ref = doc(db, "users", user.uid);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          email: user.email || null,
+          displayName: user.displayName || user.email || "Adventurer",
+          xp: 0,
+          level: 1,
+          completed: []
+        });
+      }
+      return (await getDoc(ref)).data();
+    }
+
+    function calcLevel(xp) {
+      return Math.floor(xp / 100) + 1;
+    }
+
+    async function loadLessons() {
+      const snap = await getDocs(collection(db, "lessons"));
+      const lessons = [];
+      snap.forEach(docSnap => lessons.push({ id: docSnap.id, ...docSnap.data() }));
+      return lessons;
+    }
+
+    function renderProfile(userDoc) {
+      profileEl().innerHTML = `
+        <p><strong>${userDoc.displayName}</strong></p>
+        <p>Level: ${userDoc.level}</p>
+        <p>XP: ${userDoc.xp}</p>
+      `;
+    }
+
+    function renderLessons(lessons, completed, uid) {
+      lessonsEl().innerHTML = "";
+      lessons.forEach(lesson => {
+        const done = completed.includes(lesson.id);
+        const div = document.createElement("div");
+        div.style.marginBottom = "12px";
+        div.style.padding = "10px";
+        div.style.border = "1px solid #111827";
+        div.style.borderRadius = "8px";
+        div.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <div>
+              <span style="font-size:11px;background:#111827;padding:2px 8px;border-radius:999px;margin-right:6px;">
+                ${lesson.track || "General"}
+              </span>
+              <strong>${lesson.title}</strong>
+            </div>
+            <span style="font-size:12px;color:#9ca3af;">${lesson.xp} XP</span>
+          </div>
+          <button ${done ? "disabled" : ""}>
+            ${done ? "Completed" : "Complete lesson"}
+          </button>
+        `;
+        const btn = div.querySelector("button");
+        btn.addEventListener("click", async () => {
+          if (done) return;
+          const userRef = doc(db, "users", uid);
+          await updateDoc(userRef, {
+            xp: increment(lesson.xp),
+            completed: arrayUnion(lesson.id)
+          });
+          const updated = (await getDoc(userRef)).data();
+          updated.level = calcLevel(updated.xp);
+          await updateDoc(userRef, { level: updated.level });
+          renderProfile(updated);
+          renderLessons(lessons, updated.completed, uid);
+        });
+        lessonsEl().appendChild(div);
+      });
+    }
+
+    async function refreshUI(user) {
+      if (!user) {
+        statusEl().textContent = "Not logged in";
+        profileEl().innerHTML = "";
+        lessonsEl().innerHTML = "";
+        return;
+      }
+      statusEl().textContent = `Logged in as ${user.displayName || user.email}`;
+      const userDoc = await ensureUserDoc(user);
+      userDoc.level = calcLevel(userDoc.xp);
+      await updateDoc(doc(db, "users", user.uid), { level: userDoc.level });
+      renderProfile(userDoc);
+      const lessons = await loadLessons();
+      renderLessons(lessons, userDoc.completed || [], user.uid);
+    }
+
+    window.loginWithGoogle = async () => {
+      try {
+        const result = await signInWithPopup(auth, googleProvider);
+        await refreshUI(result.user);
+      } catch (e) {
+        console.error(e);
+        alert("Google login failed");
+      }
+    };
+
+    window.loginWithGithub = async () => {
+      try {
+        const result = await signInWithPopup(auth, githubProvider);
+        await refreshUI(result.user);
+      } catch (e) {
+        console.error(e);
+        alert("GitHub login failed");
+      }
+    };
+
+    window.handleEmailLogin = async (event) => {
+      event.preventDefault();
+      const email = event.target.email.value.trim();
+      const password = event.target.password.value.trim();
+      const mode = event.target.mode.value;
+      try {
+        let cred;
+        if (mode === "signup") {
+          cred = await createUserWithEmailAndPassword(auth, email, password);
+        } else {
+          cred = await signInWithEmailAndPassword(auth, email, password);
+        }
+        await refreshUI(cred.user);
+        event.target.reset();
+      } catch (e) {
+        console.error(e);
+        alert("Email login failed: " + e.message);
+      }
+    };
+
+    window.logout = async () => {
+      await signOut(auth);
+    };
+
+    onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        loginGoogleBtn().style.display = "none";
+        loginGithubBtn().style.display = "none";
+        loginEmailForm().style.display = "none";
+        logoutBtn().style.display = "inline-block";
+      } else {
+        loginGoogleBtn().style.display = "inline-block";
+        loginGithubBtn().style.display = "inline-block";
+        loginEmailForm().style.display = "block";
+        logoutBtn().style.display = "none";
+      }
+      await refreshUI(user);
+    });
+  </script>
+
+  <style>
+    body {
+      background:#020617;
+      color:#e5e7eb;
+      font-family:system-ui,sans-serif;
+      margin:0;
+      padding:0;
+    }
+    .app {
+      max-width:900px;
+      margin:40px auto;
+      padding:24px;
+      background:#020617;
+      border-radius:12px;
+      border:1px solid #1f2937;
+      box-shadow:0 0 40px rgba(0,0,0,0.6);
+    }
+    h1 {
+      margin-top:0;
+    }
+    button {
+      background:#22c55e;
+      border:none;
+      color:#020617;
+      padding:8px 14px;
+      border-radius:999px;
+      cursor:pointer;
+      font-weight:600;
+      font-size:14px;
+    }
+    button[disabled] {
+      background:#4b5563;
+      cursor:default;
+    }
+    input {
+      background:#020617;
+      border:1px solid #374151;
+      border-radius:6px;
+      padding:6px 8px;
+      color:#e5e7eb;
+      font-size:13px;
+      width:100%;
+      box-sizing:border-box;
+      margin-bottom:6px;
+    }
+    label {
+      font-size:12px;
+      color:#9ca3af;
+    }
+    .login-row {
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-bottom:12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>CodeQuest by hijake</h1>
+    <p id="status">Not logged in</p>
+
+    <div class="login-row">
+      <button id="login-google" onclick="loginWithGoogle()">Sign in with Google</button>
+      <button id="login-github" onclick="loginWithGithub()">Sign in with GitHub</button>
+      <button id="logout-btn" onclick="logout()" style="display:none;">Sign out</button>
+    </div>
+
+    <form id="login-email-form" onsubmit="handleEmailLogin(event)" style="max-width:320px;margin-bottom:16px;">
+      <label>Email</label>
+      <input type="email" name="email" required />
+      <label>Password</label>
+      <input type="password" name="password" required />
+      <div style="display:flex;gap:8px;align-items:center;margin:6px 0;">
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;">
+          <input type="radio" name="mode" value="login" checked /> Login
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;">
+          <input type="radio" name="mode" value="signup" /> Sign up
+        </label>
+      </div>
+      <button type="submit">Continue with email</button>
+    </form>
+
+    <h2>Profile</h2>
+    <div id="profile"></div>
+
+    <h2>Lessons</h2>
+    <div id="lessons"></div>
+  </div>
+</body>
+</html>
